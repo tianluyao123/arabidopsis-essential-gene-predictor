@@ -12,6 +12,11 @@ Note: This version uses a simplified Data class to avoid torch-geometric depende
 """
 
 import os
+required_files = ["main_reducer.pkl", "bio_reducer.pkl", "final_best_model.pth", "model_config.json"]
+missing_files = [f for f in required_files if not os.path.exists(f)]
+if missing_files:
+    st.error(f"Missing model files: {missing_files}")
+    st.info("Please ensure all model files are uploaded to GitHub")
 import json
 import joblib
 import numpy as np
