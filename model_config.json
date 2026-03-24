@@ -1,0 +1,20 @@
+{
+  "main_feat_dim": 640,
+  "bio_feat_dim": 128,
+  "raw_bio_feature_dim": 384,
+  "gcn_hidden": 256,
+  "gcn_layers": 3,
+  "dropout": 0.3,
+  "K": 3,
+  "D": 4,
+  "seq_max_len": 1900,
+  "use_bio_features": true,
+  "use_feature_reduction": true,
+  "min_kmer_count": 2,
+  "cds_feature_dim": 256,
+  "aa_feature_dim": 128,
+  "best_auc": 0.9999999657947845,
+  "training_samples": 26088,
+  "positive_samples": 5755,
+  "negative_samples": 20333
+}
