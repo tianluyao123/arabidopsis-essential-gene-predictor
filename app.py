@@ -7,6 +7,8 @@ Features:
 - Real-time prediction with probability scores
 - Statistical summary (essential vs non-essential counts)
 - Multi-format result download (CSV, JSON, Excel)
+
+Note: This version uses a simplified Data class to avoid torch-geometric dependency issues on Streamlit Cloud.
 """
 
 import os
@@ -18,13 +20,48 @@ import streamlit as st
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.data import Data
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from Bio import SeqIO
 from io import StringIO, BytesIO
 import base64
 import re
+
+
+# ==============================================================================
+# 0. Simple Data Class (Replacement for torch_geometric.data.Data)
+# ==============================================================================
+class Data:
+    """
+    Simplified data container replacing torch_geometric.Data.
+    Stores node features, edge indices, and labels for graph neural networks.
+    """
+
+    def __init__(self, x_p=None, x_f=None, edge_index_pf=None, edge_index_fp=None,
+                 num_nodes_p=1, num_nodes_f=64, num_nodes=65, y=None):
+        self.x_p = x_p  # Primary node features (k-mer + bio features)
+        self.x_f = x_f  # Feature nodes (k-mer vocabulary)
+        self.edge_index_pf = edge_index_pf  # Edges from primary to features
+        self.edge_index_fp = edge_index_fp  # Edges from features to primary
+        self.num_nodes_p = num_nodes_p
+        self.num_nodes_f = num_nodes_f
+        self.num_nodes = num_nodes
+        self.y = y  # Label
+
+    def to(self, device):
+        """Move all tensors to specified device (CPU/GPU)"""
+        if self.x_p is not None:
+            self.x_p = self.x_p.to(device)
+        if self.x_f is not None:
+            self.x_f = self.x_f.to(device)
+        if self.edge_index_pf is not None:
+            self.edge_index_pf = self.edge_index_pf.to(device)
+        if self.edge_index_fp is not None:
+            self.edge_index_fp = self.edge_index_fp.to(device)
+        if self.y is not None:
+            self.y = self.y.to(device)
+        return self
+
 
 # ==============================================================================
 # 1. Genetic Code Configuration (Standard Genetic Code)
@@ -77,6 +114,7 @@ GENETIC_CODE = {
 START_CODONS = ['ATG']
 STOP_CODONS = ['TAA', 'TAG', 'TGA']
 
+
 # ==============================================================================
 # 2. Configuration Class (Simplified for Deployment)
 # ==============================================================================
@@ -99,6 +137,7 @@ class DeployConfig:
     # Device configuration (CPU for deployment)
     DEVICE = torch.device("cpu")
 
+
 # ==============================================================================
 # 3. Sequence Preprocessing Tools
 # ==============================================================================
@@ -107,6 +146,7 @@ class SequenceProcessor:
     Processor for handling variable-length sequences.
     Implements truncation and padding strategies.
     """
+
     def __init__(self, max_len: int, strategy: str = "smart"):
         self.max_len = max_len
         self.strategy = strategy
@@ -138,8 +178,9 @@ class SequenceProcessor:
         else:
             return seq_str + "N" * (self.max_len - len(seq_str))
 
+
 # ==============================================================================
-# 4. CDS to Protein Translation Module (NEW FEATURE)
+# 4. CDS to Protein Translation Module
 # ==============================================================================
 class Translator:
     """
@@ -177,7 +218,7 @@ class Translator:
 
         protein = []
         for i in range(0, length, 3):
-            codon = seq[i:i+3]
+            codon = seq[i:i + 3]
             aa = GENETIC_CODE.get(codon, '?')  # '?' for unknown codons
             protein.append(aa)
 
@@ -187,7 +228,7 @@ class Translator:
     def find_orfs(protein_seq: str, dna_seq: str, frame: int) -> list:
         """
         Find all ORFs (Open Reading Frames) in protein sequence.
-        Returns list of tuples: (start_pos, end_pos, protein_sequence, length)
+        Returns list of dicts with ORF information.
         """
         orfs = []
         in_orf = False
@@ -274,6 +315,7 @@ class Translator:
         else:
             raise ValueError(f"Unknown translation method: {method}")
 
+
 # ==============================================================================
 # 5. K-mer Encoding Functions (Core Feature Extraction)
 # ==============================================================================
@@ -282,6 +324,7 @@ def _num_transfer(seq: str) -> str:
     seq = seq.upper()
     seq = seq.replace("A", "0").replace("C", "1").replace("G", "2").replace("T", "3")
     return "".join(filter(str.isdigit, seq))
+
 
 def _num_transfer_loc(num_seq: str, K: int) -> list:
     """Convert numerical sequence to k-mer location list"""
@@ -295,6 +338,7 @@ def _num_transfer_loc(num_seq: str, K: int) -> list:
         loc.append(kmer_val)
     return loc
 
+
 def _count_kmer_occurrence(loc_list: list, num_kmer: int) -> np.ndarray:
     """Count occurrence of each k-mer"""
     count = np.zeros(num_kmer, dtype=int)
@@ -302,6 +346,7 @@ def _count_kmer_occurrence(loc_list: list, num_kmer: int) -> np.ndarray:
         if loc < num_kmer:
             count[loc] += 1
     return count
+
 
 def _loc_transfer_matrix(loc_list: list, dis: list, K: int, seq_length: int) -> np.ndarray:
     """Build k-mer co-occurrence matrix for given distance"""
@@ -319,6 +364,7 @@ def _loc_transfer_matrix(loc_list: list, dis: list, K: int, seq_length: int) -> 
                 matrix[idx1][idx2] += 1
         num = max(1, seq_length - 2 * K - dis_val + 1)
     return matrix / num if num != 0 else matrix
+
 
 def matrix_encoding_no_bio(seq: str, K: int, d: int) -> tuple:
     """
@@ -348,6 +394,7 @@ def matrix_encoding_no_bio(seq: str, K: int, d: int) -> tuple:
 
     kmer_count = _count_kmer_occurrence(loc_list, num_kmer)
     return main_feat.astype(np.float32), kmer_count
+
 
 # ==============================================================================
 # 6. Biological Feature Extractor (CDS and Amino Acid Features)
@@ -430,19 +477,19 @@ class BioFeatureExtractor:
 
         # Codon usage features
         if seq_len >= 3:
-            codons = [cds_seq[i:i+3] for i in range(0, seq_len - 2, 3)]
+            codons = [cds_seq[i:i + 3] for i in range(0, seq_len - 2, 3)]
             codon_count = len(codons)
             if codon_count > 0:
                 unique_codons = len(set(codons))
                 codon_diversity = unique_codons / codon_count
                 counts = [codons.count(c) for c in set(codons)]
-                effective_codons = 1 / sum((c/codon_count)**2 for c in counts) if codon_count > 0 else 0
+                effective_codons = 1 / sum((c / codon_count) ** 2 for c in counts) if codon_count > 0 else 0
                 start_count = sum(1 for c in codons if c == 'ATG')
                 stop_count = sum(1 for c in codons if c in ['TAA', 'TAG', 'TGA'])
                 features.extend([
                     codon_diversity, effective_codons / 61.0,
-                    start_count / codon_count, stop_count / codon_count,
-                    codon_count / 100.0
+                                     start_count / codon_count, stop_count / codon_count,
+                                     codon_count / 100.0
                 ])
             else:
                 features.extend([0.0] * 5)
@@ -480,7 +527,7 @@ class BioFeatureExtractor:
         dipeptides = [a + b for a in representative_aa for b in representative_aa][:20]
         total_pairs = max(1, len(aa_seq) - 1)
         for di in dipeptides:
-            count = sum(1 for i in range(len(aa_seq)-1) if aa_seq[i:i+2] == di)
+            count = sum(1 for i in range(len(aa_seq) - 1) if aa_seq[i:i + 2] == di)
             features.append(count / total_pairs)
 
         # Physicochemical properties
@@ -512,7 +559,7 @@ class BioFeatureExtractor:
         helix = sum(1 for aa in aa_seq if aa in ['E', 'A', 'L', 'M', 'Q', 'K', 'R'])
         sheet = sum(1 for aa in aa_seq if aa in ['V', 'I', 'Y', 'F', 'W', 'T'])
         coil = sum(1 for aa in aa_seq if aa in ['G', 'P', 'S', 'D', 'N'])
-        features.extend([helix/total, sheet/total, coil/total])
+        features.extend([helix / total, sheet / total, coil / total])
 
         # Hydrophobicity and charge
         hydrophobic = sum(1 for aa in aa_seq if aa in self.amino_acid_groups['hydrophobic'])
@@ -520,9 +567,9 @@ class BioFeatureExtractor:
         pos_charge = sum(1 for aa in aa_seq if aa in self.amino_acid_groups['charged_positive'])
         neg_charge = sum(1 for aa in aa_seq if aa in self.amino_acid_groups['charged_negative'])
         features.extend([
-            hydrophobic/total, hydrophilic/total,
-            pos_charge/total, neg_charge/total,
-            (pos_charge - neg_charge)/total
+            hydrophobic / total, hydrophilic / total,
+            pos_charge / total, neg_charge / total,
+            (pos_charge - neg_charge) / total
         ])
 
         # Sequence complexity
@@ -547,6 +594,7 @@ class BioFeatureExtractor:
 
         return np.array(features, dtype=np.float32)
 
+
 # ==============================================================================
 # 7. Feature Reduction (PCA Wrapper)
 # ==============================================================================
@@ -555,6 +603,7 @@ class FeatureReducer:
     Wrapper for PCA transformation.
     Loads pre-fitted PCA and StandardScaler from training.
     """
+
     def __init__(self, reducer_data: dict):
         self.pca = reducer_data['pca']
         self.scaler = reducer_data['scaler']
@@ -569,6 +618,7 @@ class FeatureReducer:
         if self.scaler is not None:
             features = self.scaler.transform(features.reshape(1, -1))
         return self.pca.transform(features).flatten().astype(np.float32)
+
 
 # ==============================================================================
 # 8. Graph Construction
@@ -607,11 +657,13 @@ def build_sparse_bipartite_graph(main_feat: np.ndarray, kmer_count: np.ndarray,
         y=torch.tensor([0], dtype=torch.long)
     )
 
+
 # ==============================================================================
 # 9. Model Architecture (Same as Training)
 # ==============================================================================
 class ResidualGCNLayer(nn.Module):
     """Residual GCN layer with BatchNorm and Dropout"""
+
     def __init__(self, in_dim: int, out_dim: int, dropout: float):
         super().__init__()
         self.linear = nn.Linear(in_dim, out_dim)
@@ -629,11 +681,13 @@ class ResidualGCNLayer(nn.Module):
         x = self.dropout(x)
         return x + residual
 
+
 class SimpleModel(nn.Module):
     """
     Main prediction model combining GCN layers and classifier.
     Input: Combined k-mer (640d) + biological (128d) = 768d features.
     """
+
     def __init__(self, main_feat_dim: int, bio_feat_dim: int, config: DeployConfig):
         super().__init__()
         self.config = config
@@ -687,6 +741,7 @@ class SimpleModel(nn.Module):
         # Classification
         return self.classifier(x)
 
+
 # ==============================================================================
 # 10. Prediction Pipeline with Auto-Translation
 # ==============================================================================
@@ -696,6 +751,7 @@ class GenePredictor:
     Loads model and reducers on initialization.
     Automatically translates CDS to protein when needed.
     """
+
     def __init__(self):
         self.config = DeployConfig()
         self.seq_processor = SequenceProcessor(self.config.SEQ_MAX_LEN, "smart")
@@ -764,7 +820,7 @@ class GenePredictor:
             # Extract CDS features (256-dim)
             cds_features = self.bio_extractor.extract_cds_features(clean_seq)
 
-            # === AUTOMATIC TRANSLATION (NEW FEATURE) ===
+            # === AUTOMATIC TRANSLATION ===
             # Translate CDS to protein sequence
             protein_seq = self.translator.translate_cds_to_protein(
                 clean_seq, method="longest_orf"
@@ -809,7 +865,7 @@ class GenePredictor:
                     "Translated_Protein": protein_seq[:50] + "..." if len(protein_seq) > 50 else protein_seq,
                     "Essential_Probability": round(essential_prob, 4),
                     "Prediction": "Essential" if is_essential else "Non-Essential",
-                    "Confidence": round(max(essential_prob, 1-essential_prob), 4)
+                    "Confidence": round(max(essential_prob, 1 - essential_prob), 4)
                 }
 
         except Exception as e:
@@ -849,6 +905,7 @@ class GenePredictor:
         st.session_state.translation_stats = translation_stats
         return pd.DataFrame(results)
 
+
 # ==============================================================================
 # 11. Web Interface (Streamlit)
 # ==============================================================================
@@ -860,6 +917,7 @@ def init_session_state():
         st.session_state.last_results = None
     if 'translation_stats' not in st.session_state:
         st.session_state.translation_stats = None
+
 
 def get_download_link(df: pd.DataFrame, format_type: str, filename: str):
     """
@@ -883,6 +941,7 @@ def get_download_link(df: pd.DataFrame, format_type: str, filename: str):
 
     return f'<a href="data:{mime};base64,{b64}" download="{filename}">Download {format_type.upper()}</a>'
 
+
 def main():
     """Main Streamlit application entry point"""
     st.set_page_config(
@@ -897,10 +956,10 @@ def main():
     st.title("🧬 Arabidopsis Essential Gene Prediction System")
     st.markdown("""
     **Deep Learning Model for Predicting Essential Genes in *Arabidopsis thaliana***
-    
+
     This system uses a Graph Convolutional Network (GCN) with biological feature integration 
     to classify gene sequences as Essential or Non-Essential.
-    
+
     🔬 **New Feature**: Automatic CDS to Protein translation (3-frame ORF detection)
     """)
 
@@ -938,7 +997,8 @@ def main():
 
     with tab1:
         st.subheader("Input Nucleotide Sequence (CDS)")
-        st.info("💡 Input your CDS sequence. The system will automatically translate it to protein using the longest ORF detection across 3 reading frames.")
+        st.info(
+            "💡 Input your CDS sequence. The system will automatically translate it to protein using the longest ORF detection across 3 reading frames.")
         seq_input = st.text_area(
             "Paste your DNA sequence here (ATCG only):",
             height=200,
@@ -963,7 +1023,8 @@ def main():
 
     with tab2:
         st.subheader("Batch Prediction")
-        st.info("Upload a FASTA file containing multiple CDS sequences. Each sequence will be automatically translated and predicted.")
+        st.info(
+            "Upload a FASTA file containing multiple CDS sequences. Each sequence will be automatically translated and predicted.")
         fasta_file = st.file_uploader(
             "Upload FASTA file (.fa, .fasta, .txt):",
             type=['fa', 'fasta', 'txt']
@@ -1003,10 +1064,10 @@ def main():
                 st.metric("Total Sequences", total)
             with col2:
                 st.metric("🎯 Essential Genes", essential_count,
-                         f"{essential_count/total*100:.1f}%" if total > 0 else "0%")
+                          f"{essential_count / total * 100:.1f}%" if total > 0 else "0%")
             with col3:
                 st.metric("⭕ Non-Essential Genes", non_essential_count,
-                         f"{non_essential_count/total*100:.1f}%" if total > 0 else "0%")
+                          f"{non_essential_count / total * 100:.1f}%" if total > 0 else "0%")
             with col4:
                 st.metric("Avg Confidence", f"{avg_conf:.2%}")
 
@@ -1055,11 +1116,12 @@ def main():
             - **Analysis Date:** {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}
             - **Model Version:** GCN-v1 with Auto-Translation (5-Fold CV Optimized)
             - **Total Predictions:** {len(df)}
-            - **Essential Genes Identified:** {essential_count} ({essential_count/total*100:.2f}%)
-            - **Non-Essential Genes:** {non_essential_count} ({non_essential_count/total*100:.2f}%)
+            - **Essential Genes Identified:** {essential_count} ({essential_count / total * 100:.2f}%)
+            - **Non-Essential Genes:** {non_essential_count} ({non_essential_count / total * 100:.2f}%)
             - **Classification Threshold:** {threshold}
             - **Translation Method:** Longest ORF detection (3-frame translation)
             """)
+
 
 if __name__ == "__main__":
     main()
