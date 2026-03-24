@@ -16,13 +16,48 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import onnxruntime as ort
-from sklearn.preprocessing import StandardScaler
 from io import StringIO, BytesIO
 import base64
 from Bio import SeqIO
 
 # ==============================================================================
-# 1. Genetic Code Configuration
+# 0. Page Configuration (Must be first Streamlit command)
+# ==============================================================================
+st.set_page_config(
+    page_title="Arabidopsis Essential Gene Predictor (ONNX)",
+    page_icon="🧬",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'Get Help': 'https://github.com/tianluyao123/arabidopsis-essential-gene-predictor',
+        'Report a bug': "https://github.com/tianluyao123/arabidopsis-essential-gene-predictor/issues",
+        'About': "# Arabidopsis Essential Gene Predictor v1.0\nPowered by ONNX Runtime"
+    }
+)
+
+# ==============================================================================
+# 1. CSS Fixes for Browser Compatibility
+# ==============================================================================
+st.markdown("""
+<style>
+    /* Prevent DOM conflict errors */
+    .stApp {
+        max-width: 1200px;
+        margin: 0 auto;
+    }
+    .main .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+    /* Ensure stable component rendering */
+    div[data-testid="stVerticalBlock"] {
+        gap: 0.5rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ==============================================================================
+# 2. Genetic Code Configuration
 # ==============================================================================
 GENETIC_CODE = {
     'TTT': 'F', 'TTC': 'F', 'TTA': 'L', 'TTG': 'L', 'CTT': 'L', 'CTC': 'L', 'CTA': 'L', 'CTG': 'L',
@@ -36,9 +71,8 @@ GENETIC_CODE = {
     'GGT': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G', 'TAA': '*', 'TAG': '*', 'TGA': '*'
 }
 
-
 # ==============================================================================
-# 2. Configuration
+# 3. Configuration
 # ==============================================================================
 class DeployConfig:
     K = 3
@@ -52,9 +86,8 @@ class DeployConfig:
     MIN_KMER_COUNT = 2
     DEFAULT_THRESHOLD = 0.1
 
-
 # ==============================================================================
-# 3. Sequence Processor
+# 4. Sequence Processor
 # ==============================================================================
 class SequenceProcessor:
     def __init__(self, max_len: int, strategy: str = "smart"):
@@ -72,9 +105,8 @@ class SequenceProcessor:
             return "N" * left_pad + seq_str + "N" * (total_pad - left_pad)
         return seq_str
 
-
 # ==============================================================================
-# 4. Translator (CDS to Protein)
+# 5. Translator (CDS to Protein)
 # ==============================================================================
 class Translator:
     @staticmethod
@@ -91,7 +123,7 @@ class Translator:
         seq = seq[:length]
         protein = []
         for i in range(0, length, 3):
-            codon = seq[i:i + 3]
+            codon = seq[i:i+3]
             protein.append(GENETIC_CODE.get(codon, '?'))
         return ''.join(protein)
 
@@ -128,15 +160,13 @@ class Translator:
 
         return max(all_orfs, key=len)
 
-
 # ==============================================================================
-# 5. K-mer Encoding
+# 6. K-mer Encoding
 # ==============================================================================
 def _num_transfer(seq: str) -> str:
     seq = seq.upper()
     seq = seq.replace("A", "0").replace("C", "1").replace("G", "2").replace("T", "3")
     return "".join(filter(str.isdigit, seq))
-
 
 def _num_transfer_loc(num_seq: str, K: int) -> list:
     loc = []
@@ -148,7 +178,6 @@ def _num_transfer_loc(num_seq: str, K: int) -> list:
         kmer_val = int(num_seq[i:i + K], base=4)
         loc.append(kmer_val)
     return loc
-
 
 def matrix_encoding_no_bio(seq: str, K: int, d: int) -> np.ndarray:
     seq = seq.upper()
@@ -183,9 +212,8 @@ def matrix_encoding_no_bio(seq: str, K: int, d: int) -> np.ndarray:
 
     return main_feat.astype(np.float32)
 
-
 # ==============================================================================
-# 6. BioFeatureExtractor
+# 7. BioFeatureExtractor
 # ==============================================================================
 class BioFeatureExtractor:
     def __init__(self):
@@ -253,19 +281,19 @@ class BioFeatureExtractor:
         features.extend([seq_len / 1000.0, np.log(seq_len + 1), seq_len / 3000.0])
 
         if seq_len >= 3:
-            codons = [cds_seq[i:i + 3] for i in range(0, seq_len - 2, 3)]
+            codons = [cds_seq[i:i+3] for i in range(0, seq_len - 2, 3)]
             codon_count = len(codons)
             if codon_count > 0:
                 unique_codons = len(set(codons))
                 codon_diversity = unique_codons / codon_count
                 counts = [codons.count(c) for c in set(codons)]
-                effective_codons = 1 / sum((c / codon_count) ** 2 for c in counts) if codon_count > 0 else 0
+                effective_codons = 1 / sum((c/codon_count)**2 for c in counts) if codon_count > 0 else 0
                 start_count = sum(1 for c in codons if c == 'ATG')
                 stop_count = sum(1 for c in codons if c in ['TAA', 'TAG', 'TGA'])
                 features.extend([
                     codon_diversity, effective_codons / 61.0,
-                                     start_count / codon_count, stop_count / codon_count,
-                                     codon_count / 100.0
+                    start_count / codon_count, stop_count / codon_count,
+                    codon_count / 100.0
                 ])
             else:
                 features.extend([0.0] * 5)
@@ -298,7 +326,7 @@ class BioFeatureExtractor:
         dipeptides = [a + b for a in representative_aa for b in representative_aa][:20]
         total_pairs = max(1, len(aa_seq) - 1)
         for di in dipeptides:
-            count = sum(1 for i in range(len(aa_seq) - 1) if aa_seq[i:i + 2] == di)
+            count = sum(1 for i in range(len(aa_seq)-1) if aa_seq[i:i+2] == di)
             features.append(count / total_pairs)
 
         valid_count = 0
@@ -328,16 +356,16 @@ class BioFeatureExtractor:
         helix = sum(1 for aa in aa_seq if aa in ['E', 'A', 'L', 'M', 'Q', 'K', 'R'])
         sheet = sum(1 for aa in aa_seq if aa in ['V', 'I', 'Y', 'F', 'W', 'T'])
         coil = sum(1 for aa in aa_seq if aa in ['G', 'P', 'S', 'D', 'N'])
-        features.extend([helix / total, sheet / total, coil / total])
+        features.extend([helix/total, sheet/total, coil/total])
 
         hydrophobic = sum(1 for aa in aa_seq if aa in self.amino_acid_groups['hydrophobic'])
         hydrophilic = sum(1 for aa in aa_seq if aa in self.amino_acid_groups['hydrophilic'])
         pos_charge = sum(1 for aa in aa_seq if aa in self.amino_acid_groups['charged_positive'])
         neg_charge = sum(1 for aa in aa_seq if aa in self.amino_acid_groups['charged_negative'])
         features.extend([
-            hydrophobic / total, hydrophilic / total,
-            pos_charge / total, neg_charge / total,
-            (pos_charge - neg_charge) / total
+            hydrophobic/total, hydrophilic/total,
+            pos_charge/total, neg_charge/total,
+            (pos_charge - neg_charge)/total
         ])
 
         features.extend([
@@ -359,9 +387,8 @@ class BioFeatureExtractor:
 
         return np.array(features, dtype=np.float32)
 
-
 # ==============================================================================
-# 7. Feature Reducer
+# 8. Feature Reducer
 # ==============================================================================
 class FeatureReducer:
     def __init__(self, reducer_data: dict):
@@ -378,16 +405,10 @@ class FeatureReducer:
             features = self.scaler.transform(features.reshape(1, -1))
         return self.pca.transform(features).flatten().astype(np.float32)
 
-
 # ==============================================================================
-# 8. ONNX Predictor (New Implementation)
+# 9. ONNX Predictor
 # ==============================================================================
 class GenePredictorONNX:
-    """
-    ONNX-based predictor for lightweight deployment.
-    Uses ONNX Runtime instead of PyTorch.
-    """
-
     def __init__(self):
         self.config = DeployConfig()
         self.seq_processor = SequenceProcessor(self.config.SEQ_MAX_LEN, "smart")
@@ -397,15 +418,12 @@ class GenePredictorONNX:
         self._load_resources()
 
     def _load_resources(self):
-        """Load ONNX model and reducers"""
         try:
-            # Load reducers
             main_reducer_data = joblib.load("main_reducer.pkl")
             bio_reducer_data = joblib.load("bio_reducer.pkl")
             self.main_reducer = FeatureReducer(main_reducer_data)
             self.bio_reducer = FeatureReducer(bio_reducer_data)
 
-            # Load ONNX model
             self.ort_session = ort.InferenceSession("gene_predictor.onnx")
             self.input_name = self.ort_session.get_inputs()[0].name
 
@@ -416,7 +434,6 @@ class GenePredictorONNX:
             raise e
 
     def predict_single(self, sequence: str, seq_id: str = "Query") -> dict:
-        """Predict single sequence using ONNX Runtime"""
         try:
             clean_seq = self.translator.clean_sequence(sequence)
             if len(clean_seq) < 50:
@@ -429,31 +446,23 @@ class GenePredictorONNX:
             processed_seq = self.seq_processor.process_sequence(clean_seq)
             main_feat = matrix_encoding_no_bio(processed_seq, self.config.K, self.config.D)
 
-            # Extract CDS features
             cds_features = self.bio_extractor.extract_cds_features(clean_seq)
-
-            # Translate to protein
             protein_seq = self.translator.translate_cds_to_protein(clean_seq)
 
-            # Extract AA features
             if len(protein_seq) > 0:
                 aa_features = self.bio_extractor.extract_aa_features(protein_seq)
             else:
                 aa_features = np.zeros(128, dtype=np.float32)
 
-            # Combine and reduce
             bio_feat = np.concatenate([cds_features, aa_features])
             reduced_main = self.main_reducer.transform(main_feat)
             reduced_bio = self.bio_reducer.transform(bio_feat)
 
-            # Combine features for ONNX input (768-dim)
             combined_input = np.concatenate([reduced_main, reduced_bio]).astype(np.float32).reshape(1, -1)
 
-            # ONNX Inference
             ort_outputs = self.ort_session.run(None, {self.input_name: combined_input})
-            logits = ort_outputs[0][0]  # Get first (and only) output, first batch
+            logits = ort_outputs[0][0]
 
-            # Softmax to get probabilities
             exp_logits = np.exp(logits - np.max(logits))
             probs = exp_logits / np.sum(exp_logits)
 
@@ -467,7 +476,7 @@ class GenePredictorONNX:
                 "Translated_Protein": protein_seq[:50] + "..." if len(protein_seq) > 50 else protein_seq,
                 "Essential_Probability": round(essential_prob, 4),
                 "Prediction": "Essential" if is_essential else "Non-Essential",
-                "Confidence": round(max(essential_prob, 1 - essential_prob), 4)
+                "Confidence": round(max(essential_prob, 1-essential_prob), 4)
             }
 
         except Exception as e:
@@ -480,7 +489,6 @@ class GenePredictorONNX:
             }
 
     def predict_fasta(self, fasta_content: str) -> pd.DataFrame:
-        """Predict multiple sequences from FASTA format"""
         results = []
         translation_stats = {"success": 0, "failed": 0}
 
@@ -502,9 +510,8 @@ class GenePredictorONNX:
         st.session_state.translation_stats = translation_stats
         return pd.DataFrame(results)
 
-
 # ==============================================================================
-# 9. Web Interface
+# 10. Session State Management
 # ==============================================================================
 def init_session_state():
     if 'predictor' not in st.session_state:
@@ -513,7 +520,6 @@ def init_session_state():
         st.session_state.last_results = None
     if 'translation_stats' not in st.session_state:
         st.session_state.translation_stats = None
-
 
 def get_download_link(df: pd.DataFrame, format_type: str, filename: str):
     if format_type == "csv":
@@ -533,36 +539,49 @@ def get_download_link(df: pd.DataFrame, format_type: str, filename: str):
 
     return f'<a href="data:{mime};base64,{b64}" download="{filename}">Download {format_type.upper()}</a>'
 
-
+# ==============================================================================
+# 11. Main Application
+# ==============================================================================
 def main():
-    st.set_page_config(
-        page_title="Arabidopsis Essential Gene Predictor (ONNX)",
-        page_icon="🧬",
-        layout="wide"
-    )
-
     init_session_state()
 
+    # Header Section
     st.title("🧬 Arabidopsis Essential Gene Prediction System")
     st.markdown("""
     **Deep Learning Model (ONNX Version) for Predicting Essential Genes in *Arabidopsis thaliana***
-
+    
     ✅ Lightweight deployment | ⚡ Fast inference | 🧬 Auto-translation included
     """)
 
+    # Check required files before loading
+    required_files = ["gene_predictor.onnx", "main_reducer.pkl", "bio_reducer.pkl", "model_config.json"]
+    missing_files = [f for f in required_files if not os.path.exists(f)]
+
+    if missing_files:
+        st.error(f"❌ Missing required files: {missing_files}")
+        st.info("Please ensure all model files are uploaded to the repository.")
+        st.stop()
+
+    # Initialize predictor with error handling
     if st.session_state.predictor is None:
-        with st.spinner("🔄 Loading ONNX model... (One-time initialization)"):
-            st.session_state.predictor = GenePredictorONNX()
+        try:
+            with st.spinner("🔄 Loading ONNX model... (One-time initialization)"):
+                st.session_state.predictor = GenePredictorONNX()
+        except Exception as e:
+            st.error(f"Failed to initialize predictor: {e}")
+            st.stop()
 
     predictor = st.session_state.predictor
 
+    # Sidebar
     st.sidebar.header("⚙️ Prediction Settings")
     threshold = st.sidebar.slider(
         "Classification Threshold",
         min_value=0.0,
         max_value=1.0,
         value=0.1,
-        step=0.05
+        step=0.05,
+        key="threshold_slider"
     )
 
     st.sidebar.markdown("---")
@@ -573,58 +592,65 @@ def main():
     - Translation: 3-frame ORF detection
     """)
 
+    # Main Content Tabs
     tab1, tab2 = st.tabs(["📝 Single Sequence", "📁 FASTA File Upload"])
-
-    results = None
 
     with tab1:
         st.subheader("Input Nucleotide Sequence (CDS)")
         st.info("💡 Input CDS sequence. System will auto-translate to protein using longest ORF detection.")
-        seq_input = st.text_area(
-            "Paste your DNA sequence here (ATCG only):",
-            height=200
-        )
 
-        if st.button("🔍 Predict Single Sequence", type="primary"):
-            if len(seq_input) < 50:
-                st.warning("⚠️ Sequence too short! Minimum 50 nucleotides required.")
-            else:
-                with st.spinner("🧬 Translating and predicting..."):
-                    result = predictor.predict_single(seq_input, "User_Query")
-                    results = pd.DataFrame([result])
-                    st.session_state.last_results = results
+        # Use container to isolate components
+        with st.container():
+            seq_input = st.text_area(
+                "Paste your DNA sequence here (ATCG only):",
+                height=200,
+                key="single_seq_input"
+            )
 
-                    if "Translated_Protein" in result:
-                        with st.expander("🔬 View Translation Details"):
-                            st.write(f"**Protein Length**: {result.get('Protein_Length', 0)} aa")
-                            st.code(result["Translated_Protein"])
+            if st.button("🔍 Predict Single Sequence", type="primary", key="predict_single_btn"):
+                if len(seq_input) < 50:
+                    st.warning("⚠️ Sequence too short! Minimum 50 nucleotides required.")
+                else:
+                    with st.spinner("🧬 Translating and predicting..."):
+                        result = predictor.predict_single(seq_input, "User_Query")
+                        st.session_state.last_results = pd.DataFrame([result])
+
+                        if "Translated_Protein" in result:
+                            with st.expander("🔬 View Translation Details"):
+                                st.write(f"**Protein Length**: {result.get('Protein_Length', 0)} aa")
+                                st.code(result["Translated_Protein"])
 
     with tab2:
         st.subheader("Batch Prediction")
-        fasta_file = st.file_uploader(
-            "Upload FASTA file (.fa, .fasta, .txt):",
-            type=['fa', 'fasta', 'txt']
-        )
 
-        if fasta_file is not None:
-            fasta_content = fasta_file.getvalue().decode("utf-8")
-            st.text_area("Preview (first 1000 chars):", fasta_content[:1000], height=100)
+        with st.container():
+            fasta_file = st.file_uploader(
+                "Upload FASTA file (.fa, .fasta, .txt):",
+                type=['fa', 'fasta', 'txt'],
+                key="fasta_uploader"
+            )
 
-            if st.button("🔍 Predict All Sequences", type="primary"):
-                with st.spinner("🧬 Processing batch prediction..."):
-                    results = predictor.predict_fasta(fasta_content)
-                    st.session_state.last_results = results
+            if fasta_file is not None:
+                fasta_content = fasta_file.getvalue().decode("utf-8")
+                st.text_area("Preview (first 1000 chars):", fasta_content[:1000], height=100, key="fasta_preview")
 
-                    if st.session_state.translation_stats:
-                        stats = st.session_state.translation_stats
-                        st.success(f"✅ Translation complete: {stats['success']} successful, {stats['failed']} failed")
+                if st.button("🔍 Predict All Sequences", type="primary", key="predict_batch_btn"):
+                    with st.spinner("🧬 Processing batch prediction..."):
+                        results = predictor.predict_fasta(fasta_content)
+                        st.session_state.last_results = results
 
+                        if st.session_state.translation_stats:
+                            stats = st.session_state.translation_stats
+                            st.success(f"✅ Translation complete: {stats['success']} successful, {stats['failed']} failed")
+
+    # Results Display Section
     if st.session_state.last_results is not None:
         df = st.session_state.last_results
 
         st.markdown("---")
         st.subheader("📊 Prediction Results")
 
+        # Metrics
         if "Prediction" in df.columns and "Error" not in df.columns:
             col1, col2, col3, col4 = st.columns(4)
 
@@ -637,13 +663,14 @@ def main():
                 st.metric("Total Sequences", total)
             with col2:
                 st.metric("🎯 Essential Genes", essential_count,
-                          f"{essential_count / total * 100:.1f}%" if total > 0 else "0%")
+                         f"{essential_count/total*100:.1f}%" if total > 0 else "0%")
             with col3:
                 st.metric("⭕ Non-Essential Genes", non_essential_count,
-                          f"{non_essential_count / total * 100:.1f}%" if total > 0 else "0%")
+                         f"{non_essential_count/total*100:.1f}%" if total > 0 else "0%")
             with col4:
                 st.metric("Avg Confidence", f"{avg_conf:.2%}")
 
+            # Chart
             st.markdown("#### Distribution")
             chart_data = pd.DataFrame({
                 'Category': ['Essential', 'Non-Essential'],
@@ -651,10 +678,12 @@ def main():
             })
             st.bar_chart(chart_data.set_index('Category'))
 
+        # Data Table
         st.markdown("#### Detailed Results")
         display_cols = [col for col in df.columns if col != "Translated_Protein" or len(df) <= 5]
         st.dataframe(df[display_cols], use_container_width=True, hide_index=True)
 
+        # Downloads
         st.markdown("#### 💾 Download Results")
         dl_col1, dl_col2, dl_col3 = st.columns(3)
 
@@ -665,16 +694,16 @@ def main():
         with dl_col3:
             st.markdown(get_download_link(df, "excel", "predictions.xlsx"), unsafe_allow_html=True)
 
+        # Summary
         if "Prediction" in df.columns and "Error" not in df.columns:
             st.markdown(f"""
             **Summary Report:**
             - **Analysis Date:** {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}
             - **Model Version:** GCN-ONNX (Optimized for Web)
             - **Total Predictions:** {len(df)}
-            - **Essential Genes:** {essential_count} ({essential_count / total * 100:.2f}%)
-            - **Non-Essential Genes:** {non_essential_count} ({non_essential_count / total * 100:.2f}%)
+            - **Essential Genes:** {essential_count} ({essential_count/total*100:.2f}%)
+            - **Non-Essential Genes:** {non_essential_count} ({non_essential_count/total*100:.2f}%)
             """)
-
 
 if __name__ == "__main__":
     main()
